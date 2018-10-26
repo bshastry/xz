@@ -123,9 +123,9 @@ decompress(lzma_stream *strm, const uint8_t *inbuf, size_t inlen,
                 break;
             }
 
-            fprintf(stderr, "%s: Decoder error: "
+            fprintf(stderr, "Decoder error: "
                     "%s (error code %u)\n",
-                    inname, msg, ret);
+                    msg, ret);
 #endif
             return false;
         }
