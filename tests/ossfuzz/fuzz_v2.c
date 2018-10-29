@@ -16,9 +16,23 @@
 #include "lzma.h"
 
 
-// Output buffer for decompressed data. This is write only; nothing cares
-// about the actual data written here.
-static uint8_t outbuf[4096];
+// Chunk sizes (in bytes) to be used for passing input and output data.
+//
+// Passing the whole input file to liblzma at once and using an output
+// buffer of 1-4 KiB would be the fastest, but using tiny odd-sized
+// buffers exercises the corner cases where liblzma has to be able to
+// stop and continue the decoding when running out of input data or
+// the output buffer becomes full.
+//
+// One-byte chunks would be quite slow. As a compromise, bigger values are
+// used to get better speed (only 50-150 % slower than the fast version).
+#define IN_CHUNK_SIZE 13
+#define OUT_CHUNK_SIZE 29
+
+
+// Output buffer for decompressed data. This is write only; nothing
+// cares about the actual data written here.
+static uint8_t outbuf[OUT_CHUNK_SIZE];
 
 
 extern int
@@ -57,13 +71,32 @@ LLVMFuzzerTestOneInput(const uint8_t *inbuf, size_t inbuf_size)
                 abort();
         }
 
-        // Give the whole input buffer at once to liblzma.
         strm.next_in = inbuf;
-        strm.avail_in = inbuf_size;
+        strm.avail_in = 0;
         strm.next_out = outbuf;
         strm.avail_out = sizeof(outbuf);
 
-        while ((ret = lzma_code(&strm, LZMA_FINISH)) == LZMA_OK) {
+        // Use LZMA_RUN until the last input byte is available to lzma_code().
+        lzma_action action = LZMA_RUN;
+
+        do {
+                if (strm.avail_in == 0) {
+                        // Add at most CHUNK_SIZE bytes of more input.
+                        // We don't need to set strm.next_in as that
+                        // already points to the correct byte.
+                        if (inbuf_size > 0) {
+                                strm.avail_in = inbuf_size < IN_CHUNK_SIZE
+                                                ? inbuf_size
+                                                : IN_CHUNK_SIZE;
+                                inbuf_size -= strm.avail_in;
+                        }
+
+                        // Use LZMA_FINISH when the last input byte is
+                        // available to lzma_code().
+                        if (inbuf_size == 0)
+                                action = LZMA_FINISH;
+                }
+
                 if (strm.avail_out == 0) {
                         // outbuf became full. We don't care about the
                         // uncompressed data there, so we simply reuse
@@ -71,7 +104,9 @@ LLVMFuzzerTestOneInput(const uint8_t *inbuf, size_t inbuf_size)
                         strm.next_out = outbuf;
                         strm.avail_out = sizeof(outbuf);
                 }
-        }
+
+                ret = lzma_code(&strm, action);
+        } while (ret == LZMA_OK);
 
         // LZMA_PROG_ERROR should never happen as long as the code calling
         // the liblzma functions is correct. Thus LZMA_PROG_ERROR is a sign
